@@ -1,7 +1,8 @@
-opencv-python~=4.10.0.84
-pillow~=11.0.0
-numpy~=1.26.4
-protobuf~=4.25.5
-streamlit~=1.40.2
-mediapipe~=0.10.18
-python-dotenv~=1.0.1
+opencv-python
+Pillow
+mediapipe
+google-generativeai
+numpy
+streamlit
+streamlit-extras
+python-dotenv
