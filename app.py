@@ -208,12 +208,22 @@ class calculator:
         # Initializes a Flash Generative Model
         model = genai.GenerativeModel(model_name = 'gemini-1.5-flash')
 
-        # Input Prompt
         prompt = "Analyze the image and provide the following:\n" \
-                 "* The mathematical equation represented in the image.\n" \
-                 "* The solution to the equation.\n" \
-                 "* A short and sweet explanation of the steps taken to arrive at the solution."
-        
+                 "* Determine the type of content in the image (e.g., mathematical equation, text, symbols, geometric shapes, or general artwork).\n" \
+                 "* If it's a mathematical equation:\n" \
+                 "  - The mathematical equation represented in the image.\n" \
+                 "  - The solution to the equation.\n" \
+                 "  - A short and sweet explanation of the steps taken to arrive at the solution.\n" \
+                 "* If it's text or symbols:\n" \
+                 "  - The text or symbols extracted from the image.\n" \
+                 "  - A short explanation of the extracted content.\n" \
+                 "* If it's geometric shapes or patterns:\n" \
+                 "  - Identify the shapes or patterns in the image (e.g., circles, stars, stripes).\n" \
+                 "  - Provide measurements or relationships between elements if applicable.\n" \
+                 "* If it's general artwork:\n" \
+                 "  - Describe the main elements or patterns in the artwork.\n" \
+                 "  - Identify any recognizable objects, symbols, or themes in the drawing."
+
         # Sends Request to Model to Generate Content using a Text Prompt and Image
         response = model.generate_content([prompt, imgCanvas])
 
