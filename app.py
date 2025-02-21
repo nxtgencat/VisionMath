@@ -8,292 +8,211 @@ from streamlit_extras.add_vertical_space import add_vertical_space
 from mediapipe.python.solutions import hands, drawing_utils
 from dotenv import load_dotenv
 from warnings import filterwarnings
-filterwarnings(action='ignore')
+import threading
+from queue import Queue
+from config import *
+
+filterwarnings('ignore')
 
 
-class calculator:
+class VirtualCalculator:
+    def __init__(self):
+        load_dotenv()
+        self._setup_components()
 
+    def _setup_components(self):
+        # Initialize camera
+        self.cap = cv2.VideoCapture(0)
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, WINDOW_CONFIG['WIDTH'])
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, WINDOW_CONFIG['HEIGHT'])
 
-    def streamlit_config(self):
+        # Initialize other components
+        self.canvas = np.zeros((WINDOW_CONFIG['HEIGHT'], WINDOW_CONFIG['WIDTH'], 3), dtype=np.uint8)
+        self.hand_detector = hands.Hands(max_num_hands=1, min_detection_confidence=0.75)
+        self.landmark_list = []
+        self.fingers = []
+        self.prev_point = (0, 0)
 
-        # page configuration
+        # Status tracking
+        self.current_mode = "Ready"
+        self.is_analyzing = False
+        self.result_queue = Queue()
+        self.status_queue = Queue()
+
+    @staticmethod
+    def setup_page():
         st.set_page_config(page_title='Calculator', layout="wide")
-
-        # page header transparent color and Removes top padding 
-        page_background_color = """
-        <style>
-
-        [data-testid="stHeader"] 
-        {
-        background: rgba(0,0,0,0);
-        }
-
-        .block-container {
-            padding-top: 0rem;
-        }
-
-        </style>
-        """
-        st.markdown(page_background_color, unsafe_allow_html=True)
-
-        # title and position
-        st.markdown(f'<h1 style="text-align: center;">Virtual Calculator</h1>',
-                    unsafe_allow_html=True)
+        st.markdown("""
+            <style>
+            [data-testid="stHeader"] { background: rgba(0,0,0,0); }
+            .block-container { padding-top: 0rem; }
+            </style>
+            <h1 style="text-align: center;">Virtual Calculator</h1>
+        """, unsafe_allow_html=True)
         add_vertical_space(1)
 
+    def check_gesture(self, gesture_name):
+        if not self.fingers:
+            return False
+        return self.fingers == GESTURE_CONFIG[gesture_name]['fingers']
 
-    def __init__(self):
-
-        # Load the Env File for Secrect API Key
-        load_dotenv()
-
-        # Initialize a Webcam to Capture Video and Set Width, Height and Brightness
-        self.cap = cv2.VideoCapture(0)
-        self.cap.set(propId=cv2.CAP_PROP_FRAME_WIDTH, value=950)
-        self.cap.set(propId=cv2.CAP_PROP_FRAME_HEIGHT, value=550)
-        self.cap.set(propId=cv2.CAP_PROP_BRIGHTNESS, value=130)
-
-        # Initialize Canvas Image
-        self.imgCanvas = np.zeros(shape=(550,950,3), dtype=np.uint8)
-
-        # Initializes a MediaPipe Hand object
-        self.mphands = hands.Hands(max_num_hands=1, min_detection_confidence=0.75)
-
-        # Set Drwaing Origin to Zero
-        self.p1, self.p2 = 0, 0
-
-        # Set Previous Time is Zero for FPS
-        self.p_time = 0
-
-        # Create Fingers Open/Close Position List
-        self.fingers = []
-
-
-    def process_frame(self):
-
-        # Reading the Video Capture to return the Success and Image Frame
-        success, img = self.cap.read()
-
-        # Resize the Image
-        img = cv2.resize(src=img, dsize=(950,550))
-
-        # Flip the Image Horizontally for a Later Selfie_View Display
-        self.img = cv2.flip(src=img, flipCode=1)
-
-        # BGR Image Convert to RGB Image
-        self.imgRGB = cv2.cvtColor(self.img, cv2.COLOR_BGR2RGB)
-
-
-    def process_hands(self):
-
-        # Processes an RGB Image and Returns the Hand Landmarks and Handedness of each Detected Hand
-        result = self.mphands.process(image=self.imgRGB)
-
-        # Draws the landmarks and the connections on the image
+    def process_hands(self, frame):
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = self.hand_detector.process(frame_rgb)
         self.landmark_list = []
-
-        if result.multi_hand_landmarks:
-            for hand_lms in result.multi_hand_landmarks:
-                drawing_utils.draw_landmarks(image=self.img, landmark_list=hand_lms, 
-                                            connections=hands.HAND_CONNECTIONS)
-            
-                # Extract ID and Origin for Each Landmarks
-                for id, lm in enumerate(hand_lms.landmark):
-                    h, w, c = self.img.shape
-                    x, y = lm.x, lm.y
-                    cx, cy = int(x * w), int(y * h)
-                    self.landmark_list.append([id, cx, cy])
-
-
-    def identify_fingers(self):
-
-        # Identify Each Fingers Open/Close Position
         self.fingers = []
 
-        # Verify the Hands Detection in Web Camera
-        if self.landmark_list != []:
-            for id in [4,8,12,16,20]:
+        if results.multi_hand_landmarks:
+            for hand in results.multi_hand_landmarks:
+                drawing_utils.draw_landmarks(frame, hand, hands.HAND_CONNECTIONS)
 
-                # Index Finger, Middle Finger, Ring Finger and Pinky Finger
-                if id != 4:
-                    if self.landmark_list[id][2] < self.landmark_list[id-2][2]:
-                        self.fingers.append(1)
-                    else:
-                        self.fingers.append(0)
-                        
-                # thumb Finger
-                else:
-                    if self.landmark_list[id][1] < self.landmark_list[id-2][1]:
-                        self.fingers.append(1)
-                    else:
-                        self.fingers.append(0)
+                # Get landmarks
+                for idx, lm in enumerate(hand.landmark):
+                    h, w, _ = frame.shape
+                    cx, cy = int(lm.x * w), int(lm.y * h)
+                    self.landmark_list.append([idx, cx, cy])
 
-            # Identify Finger Open Position 
-            for i in range(0, 5):
-                if self.fingers[i] == 1:
-                    cx, cy = self.landmark_list[(i+1)*4][1], self.landmark_list[(i+1)*4][2]
-                    cv2.circle(img=self.img, center=(cx,cy), radius=5, color=(255,0,255), thickness=1)
+            # Check finger positions
+            if self.landmark_list:
+                # Thumb
+                self.fingers.append(int(self.landmark_list[4][1] < self.landmark_list[3][1]))
+                # Other fingers
+                for tip in [8, 12, 16, 20]:
+                    self.fingers.append(int(self.landmark_list[tip][2] < self.landmark_list[tip - 2][2]))
 
+    def handle_gestures(self):
+        if not self.landmark_list:
+            self.current_mode = "No hand detected"
+            return
 
-    def handle_drawing_mode(self):
+        # Drawing mode
+        if self.check_gesture('DRAW'):
+            self.current_mode = GESTURE_CONFIG['DRAW']['name']
+            cx, cy = self.landmark_list[8][1:3]
+            if self.prev_point == (0, 0):
+                self.prev_point = (cx, cy)
+            cv2.line(self.canvas, self.prev_point, (cx, cy),
+                     DRAWING_CONFIG['DRAW_COLOR'],
+                     DRAWING_CONFIG['DRAW_THICKNESS'])
+            self.prev_point = (cx, cy)
 
-        # Both Thumb and Index Fingers Up in Drwaing Mode
-        if sum(self.fingers) == 2 and self.fingers[0]==self.fingers[1]==1:
-            cx, cy = self.landmark_list[8][1], self.landmark_list[8][2]
-            
-            if self.p1 == 0 and self.p2 == 0:
-                self.p1, self.p2 = cx, cy
+        # Eraser mode
+        elif self.check_gesture('ERASE'):
+            self.current_mode = GESTURE_CONFIG['ERASE']['name']
+            cx, cy = self.landmark_list[12][1:3]
+            if self.prev_point == (0, 0):
+                self.prev_point = (cx, cy)
+            cv2.line(self.canvas, self.prev_point, (cx, cy),
+                     DRAWING_CONFIG['ERASE_COLOR'],
+                     DRAWING_CONFIG['ERASE_THICKNESS'])
+            self.prev_point = (cx, cy)
 
-            cv2.line(img=self.imgCanvas, pt1=(self.p1,self.p2), pt2=(cx,cy), color=(255,0,255), thickness=5)
+        # Reset canvas
+        elif self.check_gesture('RESET'):
+            self.current_mode = GESTURE_CONFIG['RESET']['name']
+            self.canvas = np.zeros_like(self.canvas)
 
-            self.p1,self.p2 = cx,cy
-        
+        # Analyze drawing
+        elif self.check_gesture('ANALYZE') and not self.is_analyzing:
+            self.current_mode = GESTURE_CONFIG['ANALYZE']['name']
+            self.is_analyzing = True
+            self.status_queue.put("Starting analysis...")
+            thread = threading.Thread(target=self._analyze_drawing)
+            thread.daemon = True
+            thread.start()
 
-        # Thumb, Index & Middle Fingers UP ---> Disable the Points Connection
-        elif sum(self.fingers) == 3 and self.fingers[0]==self.fingers[1]==self.fingers[2]==1:
-            self.p1, self.p2 = 0, 0
-        
+        # Disable drawing
+        elif self.check_gesture('DISABLE'):
+            self.current_mode = GESTURE_CONFIG['DISABLE']['name']
+            self.prev_point = (0, 0)
 
-        # Both Thumb and Middle Fingers Up ---> Erase the Drawing Lines
-        elif sum(self.fingers) == 2 and self.fingers[0]==self.fingers[2]==1:
-            cx, cy = self.landmark_list[12][1], self.landmark_list[12][2]
-        
-            if self.p1 == 0 and self.p2 == 0:
-                self.p1, self.p2 = cx, cy
+        else:
+            self.current_mode = "Ready"
+            self.prev_point = (0, 0)
 
-            cv2.line(img=self.imgCanvas, pt1=(self.p1,self.p2), pt2=(cx,cy), color=(0,0,0), thickness=15)
+    def _analyze_drawing(self):
+        try:
+            self.status_queue.put("Converting image...")
+            img_rgb = cv2.cvtColor(self.canvas, cv2.COLOR_BGR2RGB)
+            img_pil = PIL.Image.fromarray(img_rgb)
 
-            self.p1,self.p2 = cx,cy
-        
+            self.status_queue.put("Initializing AI model...")
+            genai.configure(api_key=os.environ['GOOGLE_API_KEY'])
+            model = genai.GenerativeModel('gemini-1.5-flash')
 
-        # Both Thumb and Pinky Fingers Up ---> Erase the Whole Thing (Reset)
-        elif sum(self.fingers) == 2 and self.fingers[0]==self.fingers[4]==1:
-            self.imgCanvas = np.zeros(shape=(550,950,3), dtype=np.uint8)
+            self.status_queue.put("Analyzing content...")
+            response = model.generate_content([ANALYSIS_PROMPT, img_pil])
+            self.result_queue.put(response.text)
+            self.status_queue.put("Analysis complete!")
 
+        except Exception as e:
+            self.result_queue.put(f"Analysis error: {str(e)}")
+            self.status_queue.put("Analysis failed!")
+        finally:
+            self.is_analyzing = False
 
-    def blend_canvas_with_feed(self):
+    def blend_canvas(self, frame):
+        canvas_gray = cv2.cvtColor(self.canvas, cv2.COLOR_BGR2GRAY)
+        _, canvas_mask = cv2.threshold(canvas_gray, 50, 255, cv2.THRESH_BINARY_INV)
+        canvas_mask = cv2.cvtColor(canvas_mask, cv2.COLOR_GRAY2BGR)
 
-        # Blend the Live Camera Feed and Canvas Images ---> Canvas Image Top on it the Original Transparency Image
-        img = cv2.addWeighted(src1=self.img, alpha=0.7, src2=self.imgCanvas, beta=1, gamma=0)
+        frame = cv2.addWeighted(frame, 0.7, self.canvas, 1, 0)
+        frame = cv2.bitwise_and(frame, canvas_mask)
+        return cv2.bitwise_or(frame, self.canvas)
 
-        # Canvas_BGR Image Convert to Gray Scale Image ---> Maintain Intensity of Color Image
-        imgGray = cv2.cvtColor(self.imgCanvas, cv2.COLOR_BGR2GRAY)
-
-        # Gray Image Convert to Binary_Inverse Image ---> Gray Shades into only Two Colors (Black/White) based Threshold
-        _, imgInv = cv2.threshold(src=imgGray, thresh=50, maxval=255, type=cv2.THRESH_BINARY_INV)
-
-        # Binary_Inverse Image Convert into BGR Image ---> Single Channel Value apply All 3 Channel [0,0,0] or [255,255,255]
-        # Bleding need same Channel for Both Images 
-        imgInv = cv2.cvtColor(imgInv, cv2.COLOR_GRAY2BGR)
-        
-
-        # Blending both Images ---> Binary_Inverse Image Black/White Top on Original Image
-        img = cv2.bitwise_and(src1=img, src2=imgInv)
-
-        # Canvas Color added on the Top on Original Image
-        self.img = cv2.bitwise_or(src1=img, src2=self.imgCanvas)
-
-
-    def analyze_image_with_genai(self):
-
-        # Canvas_BGR Image Convert to RGB Image 
-        imgCanvas = cv2.cvtColor(self.imgCanvas, cv2.COLOR_BGR2RGB)
-
-        # Numpy Array Convert to PIL Image
-        imgCanvas = PIL.Image.fromarray(imgCanvas)
-
-        # Configures the genai Library
-        genai.configure(api_key=os.environ['GOOGLE_API_KEY'])
-
-        # Initializes a Flash Generative Model
-        model = genai.GenerativeModel(model_name = 'gemini-1.5-flash')
-
-        prompt = "Analyze the image and provide the following:\n" \
-                 "* Determine the type of content in the image (e.g., mathematical equation, text, symbols, geometric shapes, or general artwork).\n" \
-                 "* If it's a mathematical equation:\n" \
-                 "  - The mathematical equation represented in the image.\n" \
-                 "  - The solution to the equation.\n" \
-                 "  - A short and sweet explanation of the steps taken to arrive at the solution.\n" \
-                 "* If it's text or symbols:\n" \
-                 "  - The text or symbols extracted from the image.\n" \
-                 "  - A short explanation of the extracted content.\n" \
-                 "* If it's geometric shapes or patterns:\n" \
-                 "  - Identify the shapes or patterns in the image (e.g., circles, stars, stripes).\n" \
-                 "  - Provide measurements or relationships between elements if applicable.\n" \
-                 "* If it's general artwork:\n" \
-                 "  - Describe the main elements or patterns in the artwork.\n" \
-                 "  - Identify any recognizable objects, symbols, or themes in the drawing."
-
-        # Sends Request to Model to Generate Content using a Text Prompt and Image
-        response = model.generate_content([prompt, imgCanvas])
-
-        # Extract the Text Content of the Model’s Response.
-        return response.text
-
-        
-    def main(self):
-        
+    def run(self):
+        # Setup Streamlit layout
         col1, _, col3 = st.columns([0.8, 0.02, 0.18])
+        frame_placeholder = col1.empty()
 
-        with col1:
-            # Stream the webcam video
-            stframe = st.empty()
-        
         with col3:
-            # Placeholder for result output
-            st.markdown(f'<h5 style="text-position:center;color:green;">OUTPUT:</h5>', unsafe_allow_html=True)
+            st.markdown('<h5 style="color:green;">STATUS</h5>', unsafe_allow_html=True)
+            mode_indicator = st.empty()
+            st.markdown('<h5 style="color:green;">OUTPUT</h5>', unsafe_allow_html=True)
             result_placeholder = st.empty()
 
         while True:
-
-            if not self.cap.isOpened():
-                add_vertical_space(5)
-                st.markdown(body=f'<h4 style="text-position:center; color:orange;">Error: Could not open webcam. \
-                                    Please ensure your webcam is connected and try again</h4>', 
-                            unsafe_allow_html=True)
+            success, frame = self.cap.read()
+            if not success:
+                st.error("Cannot access webcam")
                 break
 
-            self.process_frame()
+            # Process frame
+            frame = cv2.resize(frame, (WINDOW_CONFIG['WIDTH'], WINDOW_CONFIG['HEIGHT']))
+            frame = cv2.flip(frame, 1)
 
-            self.process_hands()
+            # Process hands and gestures
+            self.process_hands(frame)
+            self.handle_gestures()
 
-            self.identify_fingers()
+            # Update status
+            status_text = f"Current Mode: {self.current_mode}"
+            if self.is_analyzing:
+                while not self.status_queue.empty():
+                    status_text += f"\n{self.status_queue.get()}"
+            mode_indicator.markdown(f"```{status_text}```")
 
-            self.handle_drawing_mode()
-
-            self.blend_canvas_with_feed()
-            
-            # Display the Output Frame in the Streamlit App
-            self.img = cv2.cvtColor(self.img, cv2.COLOR_BGR2RGB)
-            stframe.image(self.img, channels="RGB")
-
-            # After Done Process with AI
-            if sum(self.fingers) == 2 and self.fingers[1]==self.fingers[2]==1:
-                result = self.analyze_image_with_genai()
+            # Update result
+            if not self.result_queue.empty():
+                result = self.result_queue.get()
                 result_placeholder.write(f"Result: {result}")
-        
-        # Release the camera and close windows
+
+            # Display frame
+            frame = self.blend_canvas(frame)
+            frame_placeholder.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), channels="RGB")
+
         self.cap.release()
         cv2.destroyAllWindows()
-             
 
 
-try:
-
-    # Creating an instance of the class
-    calc = calculator() 
-
-    # Streamlit Configuration Setup
-    calc.streamlit_config()
-
-    # Calling the main method
-    calc.main()             
+def main():
+    try:
+        calc = VirtualCalculator()
+        calc.setup_page()
+        calc.run()
+    except Exception as e:
+        st.error(f"Error: {str(e)}")
 
 
-except Exception as e:
-
-    add_vertical_space(5)
-
-    # Displays the Error Message
-    st.markdown(f'<h5 style="text-position:center;color:orange;">{e}</h5>', unsafe_allow_html=True)
-
+if __name__ == "__main__":
+    main()
