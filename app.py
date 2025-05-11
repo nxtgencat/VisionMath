@@ -169,7 +169,7 @@ class VirtualCalculator:
 
             self.status_queue.put("Initializing AI model...")
             genai.configure(api_key=os.environ['GOOGLE_API_KEY'])
-            model = genai.GenerativeModel('gemini-1.5-flash')
+            model = genai.GenerativeModel('gemini-2.0-flash')
 
             self.status_queue.put("Analyzing content...")
             analysis_start = time.time()
